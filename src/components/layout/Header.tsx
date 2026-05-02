@@ -124,7 +124,11 @@ export default function Header() {
         )}
 
         {/* Window Controls */}
-        <div className="flex items-center ml-3" style={{ borderLeft: "1px solid var(--border)" }}>
+        <div
+          className="flex items-center ml-3"
+          style={{ borderLeft: "1px solid var(--border)" }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           <button
             onClick={minimizeWindow}
             className="w-10 h-14 flex items-center justify-center cursor-pointer transition-colors"
