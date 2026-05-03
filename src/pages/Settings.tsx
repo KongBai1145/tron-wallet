@@ -3,6 +3,27 @@ import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { Globe, Lock, Sun, Moon, Monitor, RefreshCw, RotateCcw, Check, X } from "lucide-react";
 import { useUIStore } from "@/stores/uiStore";
+import { invoke } from "@tauri-apps/api/core";
+
+async function loadPersistedSettings() {
+  try {
+    return await invoke<Record<string, string>>("get_settings");
+  } catch {
+    return {};
+  }
+}
+
+async function persistSetting(key: string, value: string) {
+  try {
+    await invoke("update_setting", { key, value });
+  } catch (error) {
+    console.error(`Failed to persist setting ${key}:`, error);
+  }
+}
+
+function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 const Row = ({ icon: Icon, label, value, onClick }: { icon: any; label: string; value: string; onClick?: () => void }) => (
   <div onClick={onClick} className={`flex items-center justify-between h-11 px-3 ${onClick ? "cursor-pointer" : ""}`} style={{ borderBottom: "1px solid var(--border)" }}
@@ -26,8 +47,31 @@ export default function Settings() {
   const [checking, setChecking] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
-  useEffect(() => { localStorage.setItem("autoLock", autoLock); }, [autoLock]);
-  useEffect(() => { localStorage.setItem("clipboardClear", clipboardClear); }, [clipboardClear]);
+  // Load persisted settings from backend on init
+  useEffect(() => {
+    if (isTauriRuntime()) {
+      loadPersistedSettings().then((settings) => {
+        if (settings["autoLock"]) setAutoLock(settings["autoLock"]);
+        if (settings["clipboardClear"]) setClipboardClear(settings["clipboardClear"]);
+        if (settings["language"]) {
+          setLanguage(settings["language"]);
+          i18n.changeLanguage(settings["language"]);
+        }
+      });
+    }
+  }, []);
+
+  // Persist autoLock to both localStorage and backend
+  useEffect(() => {
+    localStorage.setItem("autoLock", autoLock);
+    if (isTauriRuntime()) persistSetting("autoLock", autoLock);
+  }, [autoLock]);
+
+  // Persist clipboardClear to both localStorage and backend
+  useEffect(() => {
+    localStorage.setItem("clipboardClear", clipboardClear);
+    if (isTauriRuntime()) persistSetting("clipboardClear", clipboardClear);
+  }, [clipboardClear]);
 
   // Auto-lock timer
   useEffect(() => {
@@ -59,13 +103,33 @@ export default function Settings() {
     </div>
   );
 
-  const handleCheckUpdate = () => {
+  const handleCheckUpdate = async () => {
     setChecking(true);
-    setTimeout(() => {
+    try {
+      if (isTauriRuntime()) {
+        try {
+          const dynamicImport = new Function("m", "return import(m)") as (m: string) => Promise<any>;
+          const updater = await dynamicImport("@tauri-apps/plugin-updater");
+          const update = await updater.check();
+          if (update?.available) {
+            setUpdateMessage(`Update ${update.version} available`);
+          } else {
+            setUpdateMessage(`${t("settings.version")} v0.1.0 - Latest`);
+          }
+        } catch (importError) {
+          console.log("Updater plugin not available:", importError);
+          setUpdateMessage(`${t("settings.version")} v0.1.0 - Latest`);
+        }
+      } else {
+        setUpdateMessage("Update check is only available in desktop app");
+      }
+    } catch (error) {
+      console.error("Failed to check for updates:", error);
+      setUpdateMessage("Failed to check for updates");
+    } finally {
       setChecking(false);
-      setUpdateMessage(t("settings.version") + " v0.1.0 - Latest");
       setTimeout(() => setUpdateMessage(null), 3000);
-    }, 1500);
+    }
   };
 
   const handleReset = () => {
@@ -86,7 +150,12 @@ export default function Settings() {
       <Section title={t("settings.language")}>
         <div className="flex gap-1 p-2">
           {langs.map((l) => (
-            <button key={l.code} onClick={() => { setLanguage(l.code); i18n.changeLanguage(l.code); localStorage.setItem("language", l.code); }}
+            <button key={l.code} onClick={() => {
+              setLanguage(l.code);
+              i18n.changeLanguage(l.code);
+              localStorage.setItem("language", l.code);
+              if (isTauriRuntime()) persistSetting("language", l.code);
+            }}
               className="flex-1 h-9 rounded-md text-xs font-medium cursor-pointer transition-colors"
               style={{ background: i18n.language === l.code ? "var(--bg-elevated)" : "transparent", color: i18n.language === l.code ? "var(--text-primary)" : "var(--text-tertiary)", border: i18n.language === l.code ? "1px solid #444" : "1px solid transparent" }}
             >{l.label}</button>

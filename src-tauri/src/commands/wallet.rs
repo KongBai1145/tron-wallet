@@ -14,6 +14,14 @@ pub async fn create_wallet(
 
     db.save_wallet(&wallet).map_err(|e| e.to_string())?;
 
+    // Store password hash if this is the first wallet
+    let existing_wallets = db.get_all_wallets().map_err(|e| e.to_string())?;
+    if existing_wallets.len() == 1 {
+        let hash = crate::crypto::keystore::hash_password_for_verification(&request.password)
+            .map_err(|e| e.to_string())?;
+        db.update_setting("password_hash", &hash).map_err(|e| e.to_string())?;
+    }
+
     Ok(WalletInfo::from(&wallet))
 }
 
@@ -29,13 +37,23 @@ pub async fn import_wallet(
             let secret = request.secret.trim();
             let password = request.password.ok_or("Password is required for single-sig import")?;
 
-            if secret.contains(' ') {
+            let w = if secret.contains(' ') {
                 crate::core::wallet::import_from_mnemonic(&request.name, secret, &password)
                     .map_err(|e| e.to_string())?
             } else {
                 crate::core::wallet::import_from_private_key(&request.name, secret, &password)
                     .map_err(|e| e.to_string())?
+            };
+
+            // Store password hash if this is the first wallet
+            let existing_wallets = db.get_all_wallets().map_err(|e| e.to_string())?;
+            if existing_wallets.is_empty() {
+                let hash = crate::crypto::keystore::hash_password_for_verification(&password)
+                    .map_err(|e| e.to_string())?;
+                db.update_setting("password_hash", &hash).map_err(|e| e.to_string())?;
             }
+
+            w
         }
         crate::models::wallet::WalletType::WatchOnly => {
             crate::core::wallet::import_watch_only(&request.name, &request.secret)
@@ -1016,14 +1034,13 @@ fn decode_abi_string(hex_str: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn create_multisig_proposal(
+pub async fn create_unsigned_proposal(
     state: State<'_, AppState>,
     wallet_id: String,
-    password: String,
     to_address: String,
     amount_sun: u64,
     network: String,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     let db = state.db.lock().await;
     let wallet = db.get_wallet_by_id(&wallet_id)
         .map_err(|e| e.to_string())?
@@ -1033,20 +1050,243 @@ pub async fn create_multisig_proposal(
         return Err("Not a multisig wallet".to_string());
     }
 
-    let seed = crate::core::wallet::decrypt_seed(&wallet, &password)
-        .map_err(|e| format!("Wrong password: {}", e))?;
-    let private_key = derive_key_from_seed(&seed)?;
+    // Get owner permission to determine threshold
+    let client = crate::network::tron_client::TronClient::new(&network);
+    let account_info = client.get_account_full(&wallet.address).await.map_err(|e| e.to_string())?;
+    let threshold = account_info.owner_permission
+        .map(|p| p.threshold)
+        .unwrap_or(1);
 
-    // Build TRX transfer transaction
-    let tx_id = crate::core::transaction::send_trx(
-        &wallet.address,
+    let base_url = match network.as_str() {
+        "shasta" => "https://api.shasta.trongrid.io",
+        _ => "https://api.trongrid.io",
+    };
+
+    // Create unsigned transaction
+    let http_client = reqwest::Client::new();
+    let create_url = format!("{}/wallet/createtransaction", base_url);
+    let body = serde_json::json!({
+        "owner_address": wallet.address,
+        "to_address": to_address,
+        "amount": amount_sun,
+        "visible": true
+    });
+
+    let tx: serde_json::Value = http_client
+        .post(&create_url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(err) = tx["Error"].as_str() {
+        return Err(format!("Transaction creation failed: {}", err));
+    }
+    if tx["raw_data_hex"].is_null() && tx["raw_data"].is_null() {
+        let msg = tx["message"].as_str().unwrap_or("Unknown error");
+        return Err(format!("Transaction creation failed: {}", msg));
+    }
+
+    let tx_id = tx["txID"].as_str().unwrap_or_default().to_string();
+    let raw_data_hex = tx["raw_data_hex"].as_str()
+        .or_else(|| tx["raw_data"].as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // Store proposal in database
+    let proposal_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let title = format!("Send {} TRX to {}...", amount_sun / 1_000_000, &to_address[..10]);
+
+    db.save_proposal(
+        &proposal_id,
+        &wallet_id,
+        &title,
         &to_address,
         amount_sun,
-        &private_key,
-        &network,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+        "",
+        &raw_data_hex,
+        &tx_id,
+        threshold,
+        &now,
+    ).map_err(|e| e.to_string())?;
 
-    Ok(tx_id)
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "unsigned_tx": tx,
+        "threshold": threshold,
+    }))
+}
+
+#[tauri::command]
+pub async fn get_proposals(
+    state: State<'_, AppState>,
+    wallet_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let db = state.db.lock().await;
+    let proposals = db.get_proposals_by_wallet(&wallet_id).map_err(|e| e.to_string())?;
+    Ok(proposals)
+}
+
+#[tauri::command]
+pub async fn get_proposal(
+    state: State<'_, AppState>,
+    proposal_id: String,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().await;
+    let proposal = db.get_proposal_by_id(&proposal_id).map_err(|e| e.to_string())?;
+    proposal.ok_or_else(|| "Proposal not found".to_string())
+}
+
+#[tauri::command]
+pub async fn add_signature(
+    state: State<'_, AppState>,
+    proposal_id: String,
+    signature_hex: String,
+    signer_address: String,
+    network: String,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().await;
+
+    // Get proposal
+    let proposal = db.get_proposal_by_id(&proposal_id).map_err(|e| e.to_string())?
+        .ok_or("Proposal not found")?;
+
+    let wallet_id = proposal["wallet_id"].as_str().unwrap_or_default();
+    let wallet = db.get_wallet_by_id(wallet_id).map_err(|e| e.to_string())?
+        .ok_or("Wallet not found")?;
+
+    // Get owner permission to find signer weight
+    let client = crate::network::tron_client::TronClient::new(&network);
+    let account_info = client.get_account_full(&wallet.address).await.map_err(|e| e.to_string())?;
+
+    let signer_weight = account_info.owner_permission
+        .and_then(|p| {
+            p.keys.iter().find(|k| k.address == signer_address)
+                .map(|k| k.weight)
+        })
+        .unwrap_or(1);
+
+    // Store signature
+    let sig_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    db.save_signature(
+        &sig_id,
+        &proposal_id,
+        &signer_address,
+        signer_weight,
+        &signature_hex,
+        &now,
+    ).map_err(|e| e.to_string())?;
+
+    // Update current weight
+    let signatures = db.get_signatures_by_proposal(&proposal_id).map_err(|e| e.to_string())?;
+    let current_weight: u64 = signatures.iter()
+        .map(|s| s["signer_weight"].as_u64().unwrap_or(1))
+        .sum();
+
+    let threshold = proposal["threshold"].as_u64().unwrap_or(1);
+    let status = if current_weight >= threshold { "ready" } else { "pending" };
+
+    db.update_proposal_status(&proposal_id, status, current_weight, "").map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "current_weight": current_weight,
+        "threshold": threshold,
+        "status": status,
+    }))
+}
+
+#[tauri::command]
+pub async fn broadcast_proposal(
+    state: State<'_, AppState>,
+    proposal_id: String,
+    network: String,
+) -> Result<String, String> {
+    let db = state.db.lock().await;
+
+    // Get proposal
+    let proposal = db.get_proposal_by_id(&proposal_id).map_err(|e| e.to_string())?
+        .ok_or("Proposal not found")?;
+
+    let status = proposal["status"].as_str().unwrap_or_default();
+    if status != "ready" {
+        return Err("Proposal not ready for broadcast. Need more signatures.".to_string());
+    }
+
+    let raw_data_hex = proposal["raw_data_hex"].as_str().unwrap_or_default();
+    let tx_id = proposal["tx_id"].as_str().unwrap_or_default();
+
+    // Get all signatures
+    let signatures = db.get_signatures_by_proposal(&proposal_id).map_err(|e| e.to_string())?;
+
+    // Build transaction JSON
+    let tx = serde_json::json!({
+        "raw_data_hex": raw_data_hex,
+        "txID": tx_id,
+        "signature": signatures.iter()
+            .map(|s| s["signature_hex"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+    });
+
+    // Broadcast
+    let base_url = match network.as_str() {
+        "shasta" => "https://api.shasta.trongrid.io",
+        _ => "https://api.trongrid.io",
+    };
+
+    let client = reqwest::Client::new();
+    let broadcast_url = format!("{}/wallet/broadcasttransaction", base_url);
+    let resp: serde_json::Value = client
+        .post(&broadcast_url)
+        .json(&tx)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if resp["result"].as_bool().unwrap_or(false) {
+        let broadcast_tx_hash = resp["txid"].as_str()
+            .or_else(|| tx["txID"].as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        // Update proposal status
+        db.update_proposal_status(&proposal_id, "broadcasted", proposal["current_weight"].as_u64().unwrap_or(0), &broadcast_tx_hash)
+            .map_err(|e| e.to_string())?;
+
+        Ok(broadcast_tx_hash)
+    } else {
+        let msg = resp["message"].as_str()
+            .or_else(|| resp["code"].as_str())
+            .unwrap_or("Broadcast failed");
+        Err(format!("Broadcast failed: {}", msg))
+    }
+}
+
+#[tauri::command]
+pub async fn get_proposal_signatures(
+    state: State<'_, AppState>,
+    proposal_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let db = state.db.lock().await;
+    let signatures = db.get_signatures_by_proposal(&proposal_id).map_err(|e| e.to_string())?;
+    Ok(signatures)
+}
+
+#[tauri::command]
+pub async fn delete_proposal(
+    state: State<'_, AppState>,
+    proposal_id: String,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_proposal(&proposal_id).map_err(|e| e.to_string())?;
+    Ok(())
 }

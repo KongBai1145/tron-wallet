@@ -63,7 +63,8 @@
     "thresholdDesc": "Minimum combined weight of signatures required. E.g., threshold=2 with 3 keys = 2-of-3 multisig.",
     "nftWillAppear": "NFTs will appear here once you receive them",
     "qrScanner": "QR Scanner",
-    "noBookmarks": "No bookmarks yet"
+    "noBookmarks": "No bookmarks yet",
+    "exit": "Exit"
   },
   "wallet": {
     "create": "Create Wallet",
@@ -179,7 +180,8 @@
     "noNFTs": "No NFTs yet",
     "collection": "Collection",
     "attributes": "Attributes",
-    "rarity": "Rarity"
+    "rarity": "Rarity",
+    "tokenId": "#{{id}}"
   },
   "dapp": {
     "title": "DApp Browser",
@@ -189,7 +191,18 @@
     "bookmarks": "Bookmarks",
     "addBookmark": "Add Bookmark",
     "noBookmarks": "No bookmarks yet",
-    "permissions": "Permissions"
+    "permissions": "Permissions",
+    "searchDApps": "Search DApps, categories, or domains",
+    "recentlyVisited": "Recently Visited",
+    "enterUrl": "Enter URL or domain",
+    "noResults": "No results for \"{{query}}\""
+  },
+  "swap": {
+    "title": "Swap",
+    "from": "From",
+    "to": "To",
+    "info": "Powered by SunSwap DEX. Opens in embedded browser.",
+    "openSunSwap": "Open SunSwap"
   },
   "addressBook": {
     "title": "Address Book",

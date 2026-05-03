@@ -63,7 +63,8 @@
     "thresholdDesc": "所需的最低签名权重之和。例如：阈值=2，3个密钥 = 2/3 多签。",
     "nftWillAppear": "收到 NFT 后将在此显示",
     "qrScanner": "二维码扫描",
-    "noBookmarks": "暂无书签"
+    "noBookmarks": "暂无书签",
+    "exit": "退出"
   },
   "wallet": {
     "create": "创建钱包",
@@ -177,7 +178,8 @@
     "noNFTs": "暂无NFT",
     "collection": "收藏集",
     "attributes": "属性",
-    "rarity": "稀有度"
+    "rarity": "稀有度",
+    "tokenId": "#{{id}}"
   },
   "dapp": {
     "title": "DApp浏览器",
@@ -187,7 +189,18 @@
     "bookmarks": "书签",
     "addBookmark": "添加书签",
     "noBookmarks": "暂无书签",
-    "permissions": "权限"
+    "permissions": "权限",
+    "searchDApps": "搜索 DApp、分类或域名",
+    "recentlyVisited": "最近访问",
+    "enterUrl": "输入网址或域名",
+    "noResults": "没有找到 \"{{query}}\" 的结果"
+  },
+  "swap": {
+    "title": "兑换",
+    "from": "从",
+    "to": "到",
+    "info": "由 SunSwap DEX 提供支持，将在内置浏览器中打开。",
+    "openSunSwap": "打开 SunSwap"
   },
   "addressBook": {
     "title": "地址簿",

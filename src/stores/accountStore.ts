@@ -30,6 +30,10 @@ export interface AccountResource {
     threshold?: number;
     keys?: Array<{ address?: string; weight?: number; label?: string }>;
   };
+  active_permission?: Array<{
+    threshold?: number;
+    keys?: Array<{ address?: string; weight?: number; label?: string }>;
+  }>;
 }
 
 interface AccountState {

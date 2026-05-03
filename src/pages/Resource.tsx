@@ -8,7 +8,9 @@ import Modal from "@/components/ui/Modal";
 import EmptyState from "@/components/ui/EmptyState";
 import { useWalletStore } from "@/stores/walletStore";
 import { useAccountStore } from "@/stores/accountStore";
+import { useNotificationStore } from "@/stores/notificationStore";
 import { invoke } from "@tauri-apps/api/core";
+import { parseTokenAmount } from "@/utils/balance";
 
 function ResourceBar({ label, used, limit, color }: { label: string; used: number; limit: number; color: string }) {
   const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
@@ -51,6 +53,7 @@ export default function Resource() {
   const { t } = useTranslation();
   const { currentWallet } = useWalletStore();
   const { accountInfo, fetchAccountInfo } = useAccountStore();
+  const { addNotification } = useNotificationStore();
 
   const [showFreeze, setShowFreeze] = useState(false);
   const [showUnfreeze, setShowUnfreeze] = useState(false);
@@ -75,7 +78,7 @@ export default function Resource() {
     setActionLoading(true);
     setActionResult(null);
     try {
-      const amountSun = Math.floor(parseFloat(freezeAmount) * 1e6);
+      const amountSun = parseInt(parseTokenAmount(freezeAmount, 6), 10);
       await invoke("freeze_balance", {
         request: {
           wallet_id: currentWallet.id,
@@ -86,9 +89,20 @@ export default function Resource() {
         },
       });
       setActionResult({ success: true, message: t("resource.freezeSuccess") });
+      addNotification({
+        type: "success",
+        title: t("resource.freeze"),
+        message: `${freezeAmount} TRX → ${freezeResource}`,
+      });
       fetchAccountInfo(currentWallet.address, currentWallet.network);
     } catch (e) {
-      setActionResult({ success: false, message: String(e) });
+      const errMsg = String(e);
+      setActionResult({ success: false, message: errMsg });
+      addNotification({
+        type: "error",
+        title: t("resource.freeze"),
+        message: errMsg,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -99,7 +113,7 @@ export default function Resource() {
     setActionLoading(true);
     setActionResult(null);
     try {
-      const amountSun = Math.floor(parseFloat(freezeAmount) * 1e6);
+      const amountSun = parseInt(parseTokenAmount(freezeAmount, 6), 10);
       await invoke("unfreeze_balance", {
         request: {
           wallet_id: currentWallet.id,
@@ -110,9 +124,20 @@ export default function Resource() {
         },
       });
       setActionResult({ success: true, message: t("resource.unfreezeSuccess") });
+      addNotification({
+        type: "success",
+        title: t("resource.unfreeze"),
+        message: `${freezeAmount} TRX ← ${freezeResource}`,
+      });
       fetchAccountInfo(currentWallet.address, currentWallet.network);
     } catch (e) {
-      setActionResult({ success: false, message: String(e) });
+      const errMsg = String(e);
+      setActionResult({ success: false, message: errMsg });
+      addNotification({
+        type: "error",
+        title: t("resource.unfreeze"),
+        message: errMsg,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -123,7 +148,7 @@ export default function Resource() {
     setActionLoading(true);
     setActionResult(null);
     try {
-      const amountSun = Math.floor(parseFloat(freezeAmount) * 1e6);
+      const amountSun = parseInt(parseTokenAmount(freezeAmount, 6), 10);
       await invoke("delegate_resource", {
         request: {
           wallet_id: currentWallet.id,
@@ -136,9 +161,20 @@ export default function Resource() {
         },
       });
       setActionResult({ success: true, message: t("app.delegationSuccess") });
+      addNotification({
+        type: "success",
+        title: t("resource.delegate"),
+        message: `${freezeAmount} TRX → ${receiverAddress.slice(0, 6)}...`,
+      });
       fetchAccountInfo(currentWallet.address, currentWallet.network);
     } catch (e) {
-      setActionResult({ success: false, message: String(e) });
+      const errMsg = String(e);
+      setActionResult({ success: false, message: errMsg });
+      addNotification({
+        type: "error",
+        title: t("resource.delegate"),
+        message: errMsg,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -149,7 +185,7 @@ export default function Resource() {
     setActionLoading(true);
     setActionResult(null);
     try {
-      const amountSun = Math.floor(parseFloat(freezeAmount) * 1e6);
+      const amountSun = parseInt(parseTokenAmount(freezeAmount, 6), 10);
       await invoke("undelegate_resource", {
         request: {
           wallet_id: currentWallet.id,
@@ -161,9 +197,20 @@ export default function Resource() {
         },
       });
       setActionResult({ success: true, message: t("app.undelegationSuccess") });
+      addNotification({
+        type: "success",
+        title: t("resource.undelegate"),
+        message: `${freezeAmount} TRX ← ${receiverAddress.slice(0, 6)}...`,
+      });
       fetchAccountInfo(currentWallet.address, currentWallet.network);
     } catch (e) {
-      setActionResult({ success: false, message: String(e) });
+      const errMsg = String(e);
+      setActionResult({ success: false, message: errMsg });
+      addNotification({
+        type: "error",
+        title: t("resource.undelegate"),
+        message: errMsg,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -182,9 +229,20 @@ export default function Resource() {
         },
       });
       setActionResult({ success: true, message: t("resource.withdrawSuccess") });
+      addNotification({
+        type: "success",
+        title: t("resource.withdraw"),
+        message: "Withdraw completed",
+      });
       fetchAccountInfo(currentWallet.address, currentWallet.network);
     } catch (e) {
-      setActionResult({ success: false, message: String(e) });
+      const errMsg = String(e);
+      setActionResult({ success: false, message: errMsg });
+      addNotification({
+        type: "error",
+        title: t("resource.withdraw"),
+        message: errMsg,
+      });
     } finally {
       setActionLoading(false);
     }

@@ -29,6 +29,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // barcode-scanner only works on mobile platforms
+        .setup(|_app| {
+            #[cfg(mobile)]
+            {
+                app.handle().plugin(tauri_plugin_barcode_scanner::init()).ok();
+            }
+            Ok(())
+        })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -59,9 +67,20 @@ pub fn run() {
             commands::wallet::estimate_energy,
             commands::wallet::get_trc20_token_info,
             commands::wallet::get_now_block,
-            commands::wallet::create_multisig_proposal,
+            commands::wallet::create_unsigned_proposal,
+            commands::wallet::get_proposals,
+            commands::wallet::get_proposal,
+            commands::wallet::add_signature,
+            commands::wallet::broadcast_proposal,
+            commands::wallet::get_proposal_signatures,
+            commands::wallet::delete_proposal,
             commands::settings::get_settings,
             commands::settings::update_setting,
+            commands::settings::verify_password,
+            commands::settings::check_password,
+            commands::settings::setup_password_hash,
+            commands::nft::get_nft_tickets,
+            commands::nft::get_nft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

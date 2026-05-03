@@ -6,11 +6,13 @@ import { invoke } from "@tauri-apps/api/core";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
+import SwapModal from "@/components/SwapModal";
 import { useWalletStore } from "@/stores/walletStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { usePriceStore } from "@/stores/priceStore";
 import { useTransactionStore } from "@/stores/transactionStore";
 import { useNavigate } from "react-router-dom";
+import { formatTokenBalance, getNumericBalance } from "@/utils/balance";
 
 // Known TRC-20 token metadata
 const KNOWN_TOKENS: Record<string, { symbol: string; name: string; decimals: number }> = {
@@ -42,6 +44,7 @@ export default function Dashboard() {
   const [hidden, setHidden] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<"tokens" | "txs">("tokens");
+  const [showSwapModal, setShowSwapModal] = useState(false);
   const [tokenMeta, setTokenMeta] = useState<Record<string, { symbol: string; name: string; decimals: number }>>({});
 
   useEffect(() => {
@@ -120,13 +123,14 @@ export default function Dashboard() {
       const symbol = meta?.symbol ?? "UNKNOWN";
       const name = meta?.name ?? token.contract_address.slice(0, 10) + "...";
       const decimals = meta?.decimals ?? token.decimals;
-      const bal = parseFloat(token.balance) / Math.pow(10, decimals);
+      const balanceDisplay = formatTokenBalance(token.balance, decimals);
+      const balanceNumeric = getNumericBalance(token.balance, decimals);
       return {
         symbol,
         name,
-        balance: bal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        rawBalance: bal,
-        value: symbol === "USDT" || symbol === "USDC" ? formatUSD(bal) : "-",
+        balance: balanceDisplay,
+        rawBalance: balanceNumeric,
+        value: symbol === "USDT" || symbol === "USDC" ? formatUSD(balanceNumeric) : "-",
         change: "",
         up: true,
       };
@@ -173,7 +177,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-3 gap-2">
           <Button fullWidth onClick={() => navigate("/send")}><Send className="w-4 h-4" />{t("send.title")}</Button>
           <Button variant="secondary" fullWidth onClick={() => navigate("/receive")}><Download className="w-4 h-4" />{t("receive.title")}</Button>
-          <Button variant="secondary" fullWidth onClick={() => navigate("/dapp")}><ArrowLeftRight className="w-4 h-4" />Swap</Button>
+          <Button variant="secondary" fullWidth onClick={() => setShowSwapModal(true)}><ArrowLeftRight className="w-4 h-4" />{t("swap.title", "Swap")}</Button>
         </div>
       </div>
 
@@ -286,6 +290,7 @@ export default function Dashboard() {
           )}
         </div>
       )}
+      <SwapModal isOpen={showSwapModal} onClose={() => setShowSwapModal(false)} />
     </motion.div>
   );
 }

@@ -63,7 +63,8 @@
     "thresholdDesc": "所需的最低簽名權重之和。例如：閾值=2，3個金鑰 = 2/3 多簽。",
     "nftWillAppear": "收到 NFT 後將在此顯示",
     "qrScanner": "二維碼掃描",
-    "noBookmarks": "暫無書籤"
+    "noBookmarks": "暫無書籤",
+    "exit": "退出"
   },
   "wallet": {
     "create": "建立錢包",
@@ -177,7 +178,8 @@
     "noNFTs": "暫無NFT",
     "collection": "收藏集",
     "attributes": "屬性",
-    "rarity": "稀有度"
+    "rarity": "稀有度",
+    "tokenId": "#{{id}}"
   },
   "dapp": {
     "title": "DApp瀏覽器",
@@ -187,7 +189,18 @@
     "bookmarks": "書籤",
     "addBookmark": "新增書籤",
     "noBookmarks": "暫無書籤",
-    "permissions": "權限"
+    "permissions": "權限",
+    "searchDApps": "搜尋 DApp、分類或網域",
+    "recentlyVisited": "最近造訪",
+    "enterUrl": "輸入網址或網域",
+    "noResults": "沒有找到 \"{{query}}\" 的結果"
+  },
+  "swap": {
+    "title": "兌換",
+    "from": "從",
+    "to": "到",
+    "info": "由 SunSwap DEX 提供，將在內建瀏覽器中開啟。",
+    "openSunSwap": "開啟 SunSwap"
   },
   "addressBook": {
     "title": "地址簿",

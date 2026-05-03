@@ -7,6 +7,7 @@ import Header from "./Header";
 import StatusBar from "./StatusBar";
 import { useUIStore } from "@/stores/uiStore";
 import Button from "@/components/ui/Button";
+import { invoke } from "@tauri-apps/api/core";
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -18,13 +19,32 @@ function LockScreen() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleUnlock = () => {
+  const handleUnlock = async () => {
     if (!password.trim()) return;
-    // Simple unlock - password field is just a gate, actual wallet encryption is per-operation
-    unlock();
-    setPassword("");
+    setLoading(true);
     setError("");
+    try {
+      const valid = await invoke<boolean>("check_password", { password });
+      if (valid) {
+        unlock();
+        setPassword("");
+      } else {
+        setError(t("common.incorrectPassword"));
+      }
+    } catch (e) {
+      // If no password hash set, allow simple unlock for watch-only wallets
+      const msg = String(e);
+      if (msg.includes("No password set")) {
+        unlock();
+        setPassword("");
+      } else {
+        setError(t("common.incorrectPassword"));
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -64,7 +84,7 @@ function LockScreen() {
             </button>
           </div>
           {error && <p className="text-xs" style={{ color: "var(--danger)" }}>{error}</p>}
-          <Button fullWidth onClick={handleUnlock} disabled={!password.trim()}>
+          <Button fullWidth onClick={handleUnlock} disabled={!password.trim()} loading={loading}>
             {t("common.confirm")}
           </Button>
         </div>

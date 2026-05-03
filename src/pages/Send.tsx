@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { Send as SendIcon, AlertCircle, Check, QrCode, ChevronDown, Lock } from "lucide-react";
+import { Send as SendIcon, AlertCircle, Check, QrCode, ChevronDown, Lock, Scan } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import { useWalletStore } from "@/stores/walletStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { usePriceStore } from "@/stores/priceStore";
+import { useNotificationStore } from "@/stores/notificationStore";
 import { invoke } from "@tauri-apps/api/core";
+import { formatTokenBalance, getNumericBalance, parseTokenAmount } from "@/utils/balance";
+import { scan, cancel } from "@tauri-apps/plugin-barcode-scanner";
 
 // Known TRC-20 contracts
 const TRC20_CONTRACTS: Record<string, { symbol: string; name: string; decimals: number }> = {
@@ -30,6 +33,7 @@ export default function Send() {
   const { currentWallet } = useWalletStore();
   const { accountInfo, fetchAccountInfo } = useAccountStore();
   const { trxPrice, startPolling, stopPolling } = usePriceStore();
+  const { addNotification } = useNotificationStore();
 
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("");
@@ -42,6 +46,7 @@ export default function Send() {
   const [txHash, setTxHash] = useState("");
   const [error, setError] = useState("");
   const [showTokens, setShowTokens] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
     if (currentWallet?.address) {
@@ -63,12 +68,13 @@ export default function Send() {
     ...(accountInfo?.trc20_tokens ?? []).map((t) => {
       const meta = TRC20_CONTRACTS[t.contract_address];
       const decimals = meta?.decimals ?? t.decimals;
-      const bal = parseFloat(t.balance) / Math.pow(10, decimals);
+      const balanceDisplay = formatTokenBalance(t.balance, decimals);
+      const balanceNumeric = getNumericBalance(t.balance, decimals);
       return {
         symbol: meta?.symbol ?? "UNKNOWN",
         name: meta?.name ?? t.contract_address.slice(0, 10) + "...",
-        balance: bal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        rawBalance: bal,
+        balance: balanceDisplay,
+        rawBalance: balanceNumeric,
         contractAddress: t.contract_address,
         decimals,
       };
@@ -85,9 +91,10 @@ export default function Send() {
     setError("");
 
     try {
+      let sentTxId = "";
       if (sel.contractAddress) {
         // TRC-20 transfer
-        const amountRaw = Math.floor(parseFloat(amount) * Math.pow(10, sel.decimals));
+        const amountRaw = parseTokenAmount(amount, sel.decimals);
         const txId = await invoke<string>("send_trc20", {
           request: {
             wallet_id: currentWallet.id,
@@ -99,24 +106,38 @@ export default function Send() {
             network: currentWallet.network || "mainnet",
           },
         });
+        sentTxId = txId;
         setTxHash(txId);
       } else {
         // TRX transfer
-        const amountSun = Math.floor(parseFloat(amount) * 1e6);
+        const amountSun = parseTokenAmount(amount, 6);
         const txId = await invoke<string>("send_trx", {
           request: {
             wallet_id: currentWallet.id,
             password,
             to_address: to,
-            amount_sun: amountSun,
+            amount_sun: parseInt(amountSun, 10),
             network: currentWallet.network || "mainnet",
           },
         });
+        sentTxId = txId;
         setTxHash(txId);
       }
+      addNotification({
+        type: "success",
+        title: t("notification.transactionSent", "Transaction sent"),
+        message: `${amount} ${token} → ${to.slice(0, 6)}...${to.slice(-4)}`,
+        txHash: sentTxId,
+      });
       setSent(true);
     } catch (e) {
-      setError(String(e));
+      const errMsg = String(e);
+      setError(errMsg);
+      addNotification({
+        type: "error",
+        title: t("notification.transactionFailed", "Transaction failed"),
+        message: errMsg,
+      });
     } finally {
       setSending(false);
     }
@@ -134,6 +155,51 @@ export default function Send() {
   };
 
   const isValidAddress = (addr: string) => /^T[a-zA-Z0-9]{33}$/.test(addr.trim());
+
+  // QR Code scanner (only works on mobile platforms)
+  const handleScanQR = async () => {
+    setScanning(true);
+    try {
+      // Try to use barcode scanner - will fail on desktop platforms
+      const result = await scan({ windowed: true });
+      if (result?.content) {
+        let scannedText = result.content.trim();
+        // Handle QR codes that contain TRON address or URL with address
+        if (scannedText.startsWith("tron:") || scannedText.startsWith("TRON:")) {
+          const match = scannedText.match(/tron:([a-zA-Z0-9]+)/i);
+          if (match && isValidAddress(match[1])) {
+            setTo(match[1]);
+          }
+        } else if (isValidAddress(scannedText)) {
+          setTo(scannedText);
+        } else {
+          const addressMatch = scannedText.match(/T[a-zA-Z0-9]{33}/);
+          if (addressMatch) {
+            setTo(addressMatch[0]);
+          }
+        }
+      }
+    } catch (e) {
+      // Desktop fallback: try clipboard
+      console.log("Barcode scanner not available, using clipboard fallback");
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && /^T[a-zA-Z0-9]{33}$/.test(text.trim())) {
+          setTo(text.trim());
+        }
+      } catch {}
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Cancel scanner when modal opens
+  useEffect(() => {
+    if (showConfirm && scanning) {
+      cancel();
+      setScanning(false);
+    }
+  }, [showConfirm, scanning]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto space-y-4">
@@ -196,21 +262,32 @@ export default function Send() {
           onChange={(e) => setTo(e.target.value)}
           error={to && !isValidAddress(to) ? t("app.invalidTronAddress") : undefined}
           suffix={
-            <button
-              className="cursor-pointer"
-              style={{ color: "var(--text-tertiary)" }}
-              onClick={async () => {
-                try {
-                  const text = await navigator.clipboard.readText();
-                  if (text && /^T[a-zA-Z0-9]{33}$/.test(text.trim())) {
-                    setTo(text.trim());
-                  }
-                } catch {}
-              }}
-              title={t("common.paste")}
-            >
-              <QrCode className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                className="cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ color: "var(--text-tertiary)" }}
+                onClick={handleScanQR}
+                disabled={scanning}
+                title={t("send.scanQR", "Scan QR Code")}
+              >
+                {scanning ? <Scan className="w-4 h-4 animate-pulse" /> : <Scan className="w-4 h-4" />}
+              </button>
+              <button
+                className="cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ color: "var(--text-tertiary)" }}
+                onClick={async () => {
+                  try {
+                    const text = await navigator.clipboard.readText();
+                    if (text && /^T[a-zA-Z0-9]{33}$/.test(text.trim())) {
+                      setTo(text.trim());
+                    }
+                  } catch {}
+                }}
+                title={t("common.paste")}
+              >
+                <QrCode className="w-4 h-4" />
+              </button>
+            </div>
           }
         />
 

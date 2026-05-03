@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Shield, Plus, Users, Clock, CheckCircle, XCircle, Settings, Key, Send } from "lucide-react";
+import { Shield, Plus, Users, Clock, CheckCircle, XCircle, Settings, Key, Send, Copy, Check, ExternalLink, Trash2 } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import EmptyState from "@/components/ui/EmptyState";
@@ -12,7 +12,32 @@ import { useWalletStore } from "@/stores/walletStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { invoke } from "@tauri-apps/api/core";
 
-interface Proposal { id: string; title: string; status: string; signers: number; signed: number; amount: string; tx_id?: string; }
+interface Proposal {
+  id: string;
+  wallet_id: string;
+  title: string;
+  to_address: string;
+  amount_sun: number;
+  token_address?: string;
+  raw_data_hex: string;
+  tx_id: string;
+  threshold: number;
+  current_weight: number;
+  status: string;
+  created_at: string;
+  expires_at?: string;
+  broadcast_tx_hash?: string;
+}
+
+interface Signature {
+  id: string;
+  proposal_id: string;
+  signer_address: string;
+  signer_weight: number;
+  signature_hex: string;
+  signed_at: string;
+}
+
 interface PermKey { address: string; weight: number; label?: string; }
 interface Permission { threshold: number; keys: PermKey[]; }
 
@@ -21,26 +46,44 @@ export default function Multisig() {
   const { currentWallet } = useWalletStore();
   const { accountInfo, fetchAccountInfo } = useAccountStore();
   const navigate = useNavigate();
+
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [toAddress, setToAddress] = useState("");
   const [amount, setAmount] = useState("");
-  const [password, setPassword] = useState("");
   const [creating, setCreating] = useState(false);
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [unsignedTx, setUnsignedTx] = useState<any>(null);
+  const [showUnsignedTx, setShowUnsignedTx] = useState(false);
+  const [copiedTx, setCopiedTx] = useState(false);
 
-  const statusConfig = {
-    pending: { color: "warning" as const, icon: Clock },
-    approved: { color: "success" as const, icon: CheckCircle },
-    rejected: { color: "danger" as const, icon: XCircle },
-  };
+  const [selectedProposal, setSelectedProposal] = useState<Proposal | null>(null);
+  const [showProposalDetail, setShowProposalDetail] = useState(false);
+  const [showAddSignature, setShowAddSignature] = useState(false);
+  const [signatureHex, setSignatureHex] = useState("");
+  const [signerAddress, setSignerAddress] = useState("");
+  const [addingSignature, setAddingSignature] = useState(false);
+  const [signatures, setSignatures] = useState<Signature[]>([]);
+
+  const [broadcasting, setBroadcasting] = useState(false);
 
   const isMultisig = currentWallet?.wallet_type === "multisig";
 
   useEffect(() => {
     if (currentWallet?.address) {
       fetchAccountInfo(currentWallet.address, currentWallet.network);
+      fetchProposals();
     }
   }, [currentWallet?.address]);
+
+  const fetchProposals = async () => {
+    if (!currentWallet?.id) return;
+    try {
+      const list = await invoke<Proposal[]>("get_proposals", { walletId: currentWallet.id });
+      setProposals(list);
+    } catch (e) {
+      // Error fetching proposals
+    }
+  };
 
   const ownerPerm: Permission | null = accountInfo?.owner_permission ? {
     threshold: accountInfo.owner_permission.threshold ?? 1,
@@ -52,36 +95,108 @@ export default function Multisig() {
   } : null;
 
   const handleCreateProposal = async () => {
-    if (!currentWallet || !toAddress || !amount || !password) return;
+    if (!currentWallet || !toAddress || !amount) return;
     setCreating(true);
     try {
       const amountSun = Math.floor(parseFloat(amount) * 1e6);
-      const txId = await invoke<string>("create_multisig_proposal", {
+      const result = await invoke<any>("create_unsigned_proposal", {
         walletId: currentWallet.id,
-        password,
         toAddress,
         amountSun,
         network: currentWallet.network || "mainnet",
       });
-      const newProposal: Proposal = {
-        id: txId.slice(0, 8),
-        title: `Send ${amount} TRX`,
-        status: "pending",
-        signers: ownerPerm?.keys.length ?? 2,
-        signed: 1,
-        amount: `${amount} TRX`,
-        tx_id: txId,
-      };
-      setProposals([newProposal, ...proposals]);
+      setUnsignedTx(result.unsigned_tx);
       setShowCreate(false);
+      setShowUnsignedTx(true);
+      fetchProposals();
       setToAddress("");
       setAmount("");
-      setPassword("");
     } catch (e) {
-      // Error creating proposal
+      alert(String(e));
     } finally {
       setCreating(false);
     }
+  };
+
+  const copyUnsignedTx = async () => {
+    if (!unsignedTx) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(unsignedTx, null, 2));
+      setCopiedTx(true);
+      setTimeout(() => setCopiedTx(false), 2000);
+    } catch {}
+  };
+
+  const handleSelectProposal = async (proposal: Proposal) => {
+    setSelectedProposal(proposal);
+    try {
+      const sigs = await invoke<Signature[]>("get_proposal_signatures", { proposalId: proposal.id });
+      setSignatures(sigs);
+    } catch {}
+    setShowProposalDetail(true);
+  };
+
+  const handleAddSignature = async () => {
+    if (!selectedProposal || !signatureHex || !signerAddress) return;
+    setAddingSignature(true);
+    try {
+      await invoke("add_signature", {
+        proposalId: selectedProposal.id,
+        signatureHex,
+        signerAddress,
+        network: currentWallet?.network || "mainnet",
+      });
+      // Refresh signatures
+      const sigs = await invoke<Signature[]>("get_proposal_signatures", { proposalId: selectedProposal.id });
+      setSignatures(sigs);
+      // Refresh proposal
+      const updated = await invoke<Proposal>("get_proposal", { proposalId: selectedProposal.id });
+      setSelectedProposal(updated);
+      fetchProposals();
+      setShowAddSignature(false);
+      setSignatureHex("");
+      setSignerAddress("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setAddingSignature(false);
+    }
+  };
+
+  const handleBroadcast = async () => {
+    if (!selectedProposal) return;
+    setBroadcasting(true);
+    try {
+      await invoke<string>("broadcast_proposal", {
+        proposalId: selectedProposal.id,
+        network: currentWallet?.network || "mainnet",
+      });
+      fetchProposals();
+      const updated = await invoke<Proposal>("get_proposal", { proposalId: selectedProposal.id });
+      setSelectedProposal(updated);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setBroadcasting(false);
+    }
+  };
+
+  const handleDeleteProposal = async (proposalId: string) => {
+    try {
+      await invoke("delete_proposal", { proposalId });
+      fetchProposals();
+      setShowProposalDetail(false);
+      setSelectedProposal(null);
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const statusConfig: Record<string, { color: "warning" | "success" | "danger" | "default"; icon: typeof Clock }> = {
+    pending: { color: "warning", icon: Clock },
+    ready: { color: "success", icon: CheckCircle },
+    broadcasted: { color: "success", icon: CheckCircle },
+    rejected: { color: "danger", icon: XCircle },
   };
 
   if (!isMultisig) {
@@ -153,32 +268,38 @@ export default function Multisig() {
           <span className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>{t("multisig.proposal")}</span>
         </div>
         {proposals.length > 0 ? proposals.map((proposal) => {
-          const config = statusConfig[proposal.status as keyof typeof statusConfig];
+          const config = statusConfig[proposal.status] || statusConfig.pending;
           const StatusIcon = config.icon;
-          const statusColor = proposal.status === "pending" ? "var(--warning)" : proposal.status === "approved" ? "var(--success)" : "var(--danger)";
+          const progress = Math.min((proposal.current_weight / proposal.threshold) * 100, 100);
 
           return (
-            <div key={proposal.id} className="flex items-center justify-between px-4 h-14 cursor-pointer transition-colors" style={{ borderBottom: "1px solid var(--border)" }}
+            <div
+              key={proposal.id}
+              className="flex items-center justify-between px-4 h-14 cursor-pointer transition-colors"
+              style={{ borderBottom: "1px solid var(--border)" }}
+              onClick={() => handleSelectProposal(proposal)}
               onMouseEnter={(e) => (e.currentTarget.style.background = "#1F1F1F")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: proposal.status === "pending" ? "rgba(255,149,0,0.1)" : proposal.status === "approved" ? "rgba(0,214,143,0.1)" : "rgba(255,59,48,0.1)" }}>
-                  <StatusIcon className="w-4 h-4" style={{ color: statusColor }} />
+                <div className="w-9 h-9 rounded-full flex items-center justify-center"
+                  style={{ background: proposal.status === "pending" ? "rgba(255,149,0,0.1)" : proposal.status === "ready" ? "rgba(0,214,143,0.1)" : proposal.status === "broadcasted" ? "rgba(0,214,143,0.1)" : "rgba(255,59,48,0.1)" }}>
+                  <StatusIcon className="w-4 h-4"
+                    style={{ color: proposal.status === "pending" ? "var(--warning)" : proposal.status === "ready" || proposal.status === "broadcasted" ? "var(--success)" : "var(--danger)" }} />
                 </div>
                 <div>
                   <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{proposal.title}</p>
                   <div className="flex items-center gap-2 mt-0.5">
                     <Badge variant={config.color}>{proposal.status}</Badge>
-                    {proposal.amount && <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>{proposal.amount}</span>}
+                    <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>{(proposal.amount_sun / 1e6).toFixed(2)} TRX</span>
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right">
-                  <p className="text-sm font-medium" style={{ color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>{proposal.signed}/{proposal.signers}</p>
-                  <div className="w-20 h-1 rounded-full mt-1" style={{ background: "var(--bg-elevated)" }}>
-                    <div className="h-full rounded-full" style={{ width: `${(proposal.signed / proposal.signers) * 100}%`, background: "var(--accent)" }} />
+                  <p className="text-sm font-medium" style={{ color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>{proposal.current_weight}/{proposal.threshold}</p>
+                  <div className="w-20 h-1.5 rounded-full mt-1" style={{ background: "var(--bg-elevated)" }}>
+                    <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: progress >= 100 ? "var(--success)" : "var(--accent)" }} />
                   </div>
                 </div>
               </div>
@@ -197,7 +318,7 @@ export default function Multisig() {
           <div className="flex items-start gap-2 p-3 rounded-lg" style={{ background: "rgba(0,214,143,0.08)" }}>
             <Shield className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--success)" }} />
             <p className="text-xs" style={{ color: "var(--success)" }}>
-              This proposal will require {ownerPerm?.threshold ?? 2} signatures to execute.
+              {t("multisig.proposalInfo", `This proposal will require ${ownerPerm?.threshold ?? 2} signatures to execute. No password needed for multisig.`)}
             </p>
           </div>
           <Input
@@ -215,17 +336,155 @@ export default function Multisig() {
             onChange={(e) => setAmount(e.target.value)}
             suffix={<span className="text-xs" style={{ color: "var(--text-tertiary)" }}>TRX</span>}
           />
-          <Input
-            label={t("app.password")}
-            type="password"
-            placeholder={t("app.enterPassword")}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
           <div className="flex gap-2 pt-1">
             <Button variant="secondary" className="flex-1" onClick={() => setShowCreate(false)}>{t("common.cancel")}</Button>
-            <Button className="flex-1" onClick={handleCreateProposal} loading={creating} disabled={!toAddress || !amount || !password || !/^T[a-zA-Z0-9]{33}$/.test(toAddress)}>
-              <Send className="w-4 h-4" />{t("multisig.createProposal")}
+            <Button className="flex-1" onClick={handleCreateProposal} loading={creating} disabled={!toAddress || !amount || !/^T[a-zA-Z0-9]{33}$/.test(toAddress)}>
+              <Plus className="w-4 h-4" />{t("multisig.createProposal")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Unsigned Transaction Modal */}
+      <Modal isOpen={showUnsignedTx} onClose={() => setShowUnsignedTx(false)} title={t("multisig.unsignedTx", "Unsigned Transaction")}>
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 p-3 rounded-lg" style={{ background: "rgba(255,149,0,0.08)" }}>
+            <Copy className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--warning)" }} />
+            <p className="text-xs" style={{ color: "var(--warning)" }}>
+              {t("multisig.copyForSigning", "Copy this transaction JSON and sign it externally with your private key or hardware wallet.")}
+            </p>
+          </div>
+          <div className="p-3 rounded-lg max-h-48 overflow-auto text-xs font-mono" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
+            {JSON.stringify(unsignedTx, null, 2)}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" className="flex-1" onClick={() => setShowUnsignedTx(false)}>{t("common.close")}</Button>
+            <Button className="flex-1" onClick={copyUnsignedTx}>
+              {copiedTx ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              {copiedTx ? t("common.copied", "Copied") : t("common.copy")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Proposal Detail Modal */}
+      <Modal isOpen={showProposalDetail} onClose={() => { setShowProposalDetail(false); setSelectedProposal(null); }} title={t("multisig.proposalDetail", "Proposal Details")}>
+        {selectedProposal && (
+          <div className="space-y-4">
+            {/* Status */}
+            <div className="flex items-center justify-between">
+              <Badge variant={statusConfig[selectedProposal.status]?.color || "default"}>{selectedProposal.status}</Badge>
+              <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>{new Date(selectedProposal.created_at).toLocaleString()}</span>
+            </div>
+
+            {/* Details */}
+            <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--bg-elevated)" }}>
+              <div className="flex justify-between text-xs">
+                <span style={{ color: "var(--text-secondary)" }}>{t("send.to")}</span>
+                <span className="font-mono" style={{ color: "var(--text-primary)" }}>{selectedProposal.to_address.slice(0, 10)}...{selectedProposal.to_address.slice(-6)}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span style={{ color: "var(--text-secondary)" }}>{t("common.amount")}</span>
+                <span style={{ color: "var(--text-primary)" }}>{(selectedProposal.amount_sun / 1e6).toFixed(2)} TRX</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span style={{ color: "var(--text-secondary)" }}>{t("multisig.threshold")}</span>
+                <span style={{ color: "var(--text-primary)" }}>{selectedProposal.current_weight}/{selectedProposal.threshold}</span>
+              </div>
+            </div>
+
+            {/* Signatures */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Signatures ({signatures.length})</span>
+                <Button size="sm" variant="ghost" onClick={() => setShowAddSignature(true)}><Plus className="w-3 h-3" />Add</Button>
+              </div>
+              {signatures.length > 0 ? (
+                <div className="space-y-1">
+                  {signatures.map((sig) => (
+                    <div key={sig.id} className="flex items-center justify-between px-2 py-1.5 rounded text-xs" style={{ background: "var(--bg-elevated)" }}>
+                      <span className="font-mono" style={{ color: "var(--text-primary)" }}>{sig.signer_address.slice(0, 8)}...{sig.signer_address.slice(-4)}</span>
+                      <Badge variant="default">w: {sig.signer_weight}</Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-center py-2" style={{ color: "var(--text-tertiary)" }}>No signatures yet</p>
+              )}
+            </div>
+
+            {/* Progress */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs">
+                <span style={{ color: "var(--text-secondary)" }}>Progress</span>
+                <span style={{ color: "var(--text-primary)" }}>{Math.min(100, (selectedProposal.current_weight / selectedProposal.threshold) * 100).toFixed(0)}%</span>
+              </div>
+              <div className="h-2 rounded-full" style={{ background: "var(--bg-elevated)" }}>
+                <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, (selectedProposal.current_weight / selectedProposal.threshold) * 100)}%`, background: selectedProposal.current_weight >= selectedProposal.threshold ? "var(--success)" : "var(--accent)" }} />
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 pt-1">
+              {selectedProposal.status === "pending" && (
+                <Button variant="ghost" onClick={() => handleDeleteProposal(selectedProposal.id)}><Trash2 className="w-4 h-4" />{t("common.delete")}</Button>
+              )}
+              {selectedProposal.status === "ready" && (
+                <Button className="flex-1" onClick={handleBroadcast} loading={broadcasting}>
+                  <Send className="w-4 h-4" />{t("multisig.broadcast", "Broadcast")}
+                </Button>
+              )}
+              {selectedProposal.status === "broadcasted" && selectedProposal.broadcast_tx_hash && (
+                <Button variant="secondary" className="flex-1" onClick={() => window.open(`https://tronscan.org/#/transaction/${selectedProposal.broadcast_tx_hash}`, "_blank")}>
+                  <ExternalLink className="w-4 h-4" />View on TronScan
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Add Signature Modal */}
+      <Modal isOpen={showAddSignature} onClose={() => setShowAddSignature(false)} title={t("multisig.addSignature", "Add Signature")}>
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 p-3 rounded-lg" style={{ background: "rgba(0,214,143,0.08)" }}>
+            <Shield className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--success)" }} />
+            <p className="text-xs" style={{ color: "var(--success)" }}>
+              {t("multisig.signatureHelp", "Paste the signature from your external signing tool. Sign the transaction JSON using another wallet or hardware device.")}
+            </p>
+          </div>
+
+          {/* Signer Address Dropdown */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium" style={{ color: "var(--text-secondary)" }}>Signer Address</label>
+            <div className="relative">
+              {ownerPerm?.keys && (
+                <select
+                  value={signerAddress}
+                  onChange={(e) => setSignerAddress(e.target.value)}
+                  className="w-full h-11 px-3 rounded-lg text-sm cursor-pointer"
+                  style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                >
+                  <option value="">Select signer...</option>
+                  {ownerPerm.keys.map((k) => (
+                    <option key={k.address} value={k.address}>{k.label || k.address.slice(0, 10)}...{k.address.slice(-4)} (w: {k.weight})</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          <Input
+            label="Signature (hex)"
+            placeholder="65-byte signature hex string..."
+            value={signatureHex}
+            onChange={(e) => setSignatureHex(e.target.value)}
+          />
+
+          <div className="flex gap-2 pt-1">
+            <Button variant="secondary" className="flex-1" onClick={() => setShowAddSignature(false)}>{t("common.cancel")}</Button>
+            <Button className="flex-1" onClick={handleAddSignature} loading={addingSignature} disabled={!signatureHex || !signerAddress}>
+              <Plus className="w-4 h-4" />Add Signature
             </Button>
           </div>
         </div>

@@ -32,6 +32,21 @@ pub struct UnfreezeInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
+pub struct PermissionKey {
+    pub address: String,
+    pub weight: u64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct Permission {
+    pub threshold: u64,
+    #[serde(default)]
+    pub keys: Vec<PermissionKey>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AccountResource {
     pub bandwidth_limit: u64,
     pub bandwidth_used: u64,
@@ -44,6 +59,10 @@ pub struct AccountResource {
     pub trc20_tokens: Vec<Trc20Token>,
     pub unfrozen_list: Vec<UnfreezeInfo>,
     pub withdrawable_balance: u64,
+    #[serde(default)]
+    pub owner_permission: Option<Permission>,
+    #[serde(default)]
+    pub active_permission: Vec<Permission>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -158,6 +177,41 @@ impl TronClient {
             }
         }
 
+        // Parse owner permission
+        let owner_permission = account["owner_permission"].as_object().map(|perm| {
+            let threshold = perm.get("threshold").and_then(|v| v.as_u64()).unwrap_or(1);
+            let keys = perm.get("keys")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().map(|k| PermissionKey {
+                        address: k["address"].as_str().unwrap_or_default().to_string(),
+                        weight: k["weight"].as_u64().unwrap_or(1),
+                        label: None,
+                    }).collect()
+                })
+                .unwrap_or_default();
+            Permission { threshold, keys }
+        });
+
+        // Parse active permissions
+        let active_permission = account["active_permission"].as_array()
+            .map(|arr| {
+                arr.iter().map(|perm| {
+                    let threshold = perm["threshold"].as_u64().unwrap_or(1);
+                    let keys = perm["keys"].as_array()
+                        .map(|keys_arr| {
+                            keys_arr.iter().map(|k| PermissionKey {
+                                address: k["address"].as_str().unwrap_or_default().to_string(),
+                                weight: k["weight"].as_u64().unwrap_or(1),
+                                label: None,
+                            }).collect()
+                        })
+                        .unwrap_or_default();
+                    Permission { threshold, keys }
+                }).collect()
+            })
+            .unwrap_or_default();
+
         // Parse unfrozenV2 (pending withdrawals)
         let mut unfrozen_list = Vec::new();
         let mut withdrawable_balance = 0u64;
@@ -194,6 +248,8 @@ impl TronClient {
             trc20_tokens,
             unfrozen_list,
             withdrawable_balance,
+            owner_permission,
+            active_permission,
         })
     }
 
